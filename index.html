@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>신상 보드</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⭐</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -298,13 +301,12 @@ body.ro .w-only{display:none!important}
   <form class="gate-card" id="gateForm" autocomplete="off">
     <div class="lock"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/></svg></div>
     <h1>신상 보드</h1>
-    <p>비밀번호를 입력하세요</p>
+    <p id="gateSub">비밀번호를 입력하세요</p>
     <div class="gate-in">
       <input id="gatePw" type="password" placeholder="비밀번호" aria-label="비밀번호" autocomplete="current-password">
       <button type="submit" id="gateGo" aria-label="들어가기" disabled>→</button>
     </div>
     <div class="gate-err" id="gateErr" role="alert"></div>
-    <label class="gate-keep"><input type="checkbox" id="gateKeep" checked>이 기기에서 기억하기</label>
   </form>
 </div>
 
@@ -370,7 +372,7 @@ body.ro .w-only{display:none!important}
 <!-- staff -->
 <dialog id="dStaff" class="narrow">
   <div class="dh"><h2>누구로 볼까요?</h2><button class="x" data-close aria-label="닫기">×</button></div>
-  <div class="db"><p style="margin:0 0 12px;color:var(--muted);font-size:14px">자리를 고르면 그 색깔로 별표가 표시돼요. 한 번 고르면 다음부터 자동으로 기억해요.</p><div class="slots" id="slots"></div></div>
+  <div class="db"><p style="margin:0 0 12px;color:var(--muted);font-size:14px">이 기기를 쓰는 사람을 골라 주세요. 고른 색깔로 별표가 표시되고, 이 기기에서 계속 기억해요.</p><div class="slots" id="slots"></div></div>
 </dialog>
 
 <!-- ask -->
@@ -383,6 +385,16 @@ body.ro .w-only{display:none!important}
 <div class="toast" id="toast" role="status"></div>
 
 <script>
+/* ================== 설정 (여기만 바꾸세요) ================== */
+const SUPABASE_URL  = 'https://pnhmlpzrbwqcwkqcrqcy.supabase.co';   // Project URL
+const SUPABASE_KEY  = 'sb_publishable_YMlQcoGuVQrTI7mARP9pWA_FOTgpUhZ';          // publishable key (또는 anon public key)
+const TEAM_EMAIL    = 'team@sinsang-board.com';                // Supabase에 만든 공용 계정 이메일
+const BUCKET        = 'photos';
+/* ============================================================ */
+const CONFIGURED = !SUPABASE_URL.includes('YOUR-') && !SUPABASE_KEY.includes('YOUR-');
+const sb = CONFIGURED && window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+const ok = r => { if(r.error) throw r.error; return r.data; };
+const newId = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==='x'?r:(r&3|8)).toString(16)}));
 const $ = s => document.querySelector(s);
 const DEF = ['직원 A', '직원 B', '직원 C'];
 const CV = ['var(--s0)', 'var(--s1)', 'var(--s2)'];
@@ -390,15 +402,39 @@ const STAR = '<svg viewBox="0 0 24 24"><path d="M12 2.8l2.75 5.6 6.15.9-4.45 4.3
 const WD = ['일','월','화','수','목','금','토'];
 
 const S = {
-  db:null, assets:null, user:null, me:null, myName:'', mySlot:-1, canWrite:true,
-  staff: DEF.map(l => ({uid:null, label:l})), staffLoaded:false,
+  assets:false, mySlot:-1, canWrite:true,
+  staff: DEF.map(l => ({label:l})),
   products:[], vendors:[], checks:{}, comments:[],
   q:'', vendor:'all', date:'all', star:'all', sort:'new',
   openId:null, gIdx:0, usage:null, problem:''
 };
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const blob = id => id ? '/_blob/' + id : '';
+/* 비공개 저장소 사진 → 7일짜리 서명 주소 (기기에 기억해서 같은 주소 재사용 → 브라우저 캐시로 데이터 절약) */
+const PIXEL='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+const URL_TTL=7*24*3600;
+let URLS={}; try{ URLS=JSON.parse(localStorage.getItem('sinsang_urls')||'{}'); }catch(_){}
+const pendingUrls=new Set(); let urlT=0;
+function imgUrl(path){
+  if(!path) return '';
+  if(path.startsWith('blob:')||path.startsWith('data:')) return path;
+  const c=URLS[path];
+  if(c && c.e > Date.now() + (c.u ? 3600e3 : 0)) return c.u || PIXEL;
+  pendingUrls.add(path); clearTimeout(urlT); urlT=setTimeout(flushUrls,20);
+  return PIXEL;
+}
+async function flushUrls(){
+  const paths=[...pendingUrls]; pendingUrls.clear(); if(!paths.length||!sb) return;
+  for(let i=0;i<paths.length;i+=100){
+    const chunk=paths.slice(i,i+100);
+    const {data,error}=await sb.storage.from(BUCKET).createSignedUrls(chunk, URL_TTL);
+    if(error){ chunk.forEach(p=>URLS[p]={u:'',e:Date.now()+60e3}); continue; }
+    data.forEach((d,j)=>{ const p=d.path||chunk[j]; URLS[p] = d.signedUrl ? {u:d.signedUrl,e:Date.now()+URL_TTL*1000} : {u:'',e:Date.now()+600e3}; });
+  }
+  const now=Date.now(); for(const k in URLS) if(URLS[k].e<now) delete URLS[k];
+  try{ localStorage.setItem('sinsang_urls', JSON.stringify(URLS)); }catch(_){}
+  renderMain(); if(S.openId) drawDetail(true);
+}
 const ymd = d => d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 const today = () => ymd(new Date());
 function dayLabel(s, long){
@@ -451,7 +487,7 @@ document.addEventListener('click', e => { const c=e.target.closest('[data-close]
 /* ---------- filtering ---------- */
 const viewed = (p,i) => !!(p.views && p.views['s'+i]);
 const dayDone = (date,i) => !!(date && S.checks[date] && S.checks[date]['s'+i]);
-const activeSlots = () => { const a=[0,1,2].filter(i=>S.staff[i].uid); return a.length ? a : [0,1,2]; };
+const activeSlots = () => [0,1,2];
 const allDone = p => activeSlots().every(i => dayDone(p.date,i));
 const starCount = p => [0,1,2].filter(i=>starOn(p,i)).length;
 function visible(){
@@ -488,8 +524,6 @@ function renderTop(){
   const b=$('#meBtn'), i=S.mySlot;
   b.style.setProperty('--c', i>=0 ? CV[i] : 'var(--off)');
   b.querySelector('span').textContent = i>=0 ? S.staff[i].label : '내 자리 선택';
-  $('#upBtn').disabled = !S.assets;
-  $('#upBtn').title = S.assets ? '' : '사진 올리기 권한이 없어요';
 }
 
 function renderSide(){
@@ -570,7 +604,7 @@ function renderMain(){
       h += `<section class="group"><div class="group-h"><h2>${esc(sec.title)}</h2><span class="n num">${items.length}개</span>${vv?.wechat?`<span class="wechat">WeChat <b>${esc(vv.wechat)}</b><button type="button" data-copy="${esc(vv.wechat)}">복사</button></span>`:''}</div><div class="grid">`;
       items.forEach(p => {
         h += `<article class="card"><button class="thumb" data-open="${p.id}" type="button" aria-label="${esc(p.name||p.code)} 자세히">
-          ${p.thumb||p.images?.[0] ? `<img loading="lazy" decoding="async" src="${blob(p.thumb||p.images[0])}" alt="">` : ''}
+          ${p.thumb||p.images?.[0] ? `<img loading="lazy" decoding="async" src="${imgUrl(p.thumb||p.images[0])}" alt="">` : ''}
           ${(p.images?.length||0)>1 ? `<span class="badge num">${p.images.length}장</span>` : ''}
           ${ranked && starCount(p) ? `<span class="rank num">★ ${starCount(p)}</span>` : ''}</button>
           <div class="body"><div class="meta" data-open="${p.id}"><div class="code num">${ranked?`<span class="vend">${esc(vendorName(p.vendorId||''))}</span> `:''}${esc(p.code||'품번 없음')}</div><div class="name">${esc(p.name||'이름 없음')}</div></div>
@@ -587,12 +621,16 @@ async function toggleStar(id){
   if(S.mySlot<0) return openStaff();
   const p = S.products.find(x=>x.id===id); if(!p) return;
   const k = 's'+S.mySlot;
-  try{ await S.db.doc('products/'+id).update({stars:{[k]: !starOn(p,S.mySlot)}}); }catch(e){ fail(e,'별표를 바꾸지 못했어요'); }
+  const v = !starOn(p,S.mySlot);
+  p.stars = {...p.stars, [k]: v}; renderMain(); if(S.openId===id) drawDetail(false);
+  try{ ok(await sb.from('products').update({['star'+S.mySlot]: v}).eq('id',id)); }
+  catch(e){ p.stars = {...p.stars, [k]: !v}; renderMain(); fail(e,'별표를 바꾸지 못했어요'); }
 }
 async function toggleDay(){
   if(S.mySlot<0) return openStaff();
-  const k='s'+S.mySlot, ref=S.db.doc('daychecks/'+S.date), cur=S.checks[S.date];
-  try{ if(cur) await ref.update({[k]: !cur[k]}); else await ref.set({[k]: true}); }catch(e){ fail(e); }
+  const cur=S.checks[S.date]||{}, v=!cur['s'+S.mySlot];
+  S.checks[S.date]={...cur, ['s'+S.mySlot]:v}; renderAll();
+  try{ ok(await sb.from('daychecks').upsert({date:S.date, ['c'+S.mySlot]:v}, {onConflict:'date'})); }catch(e){ fail(e); loadAll(); }
 }
 const vendorFields = v => [
   {key:'name', label:'업체 이름', value:v?.name, required:true, placeholder:'예: 광저우 ○○'},
@@ -600,19 +638,19 @@ const vendorFields = v => [
 async function addVendor(){
   const r = await ask({title:'도매업체 추가', fields:vendorFields(), ok:'추가'}); if(!r) return null;
   const ex = S.vendors.find(v=>v.name===r.name); if(ex){ toast('이미 있는 업체예요'); return ex.id; }
-  try{ const ref = await S.db.collection('vendors').add({name:r.name, wechat:r.wechat||'', createdAt:Date.now()}); toast(`'${r.name}' 추가했어요`); return ref.id; }catch(e){ fail(e); return null; }
+  try{ const row = ok(await sb.from('vendors').insert({name:r.name, wechat:r.wechat||''}).select().single()); upsertLocal(S.vendors, fromVendor(row)); renderAll(); toast(`'${r.name}' 추가했어요`); return row.id; }catch(e){ fail(e); return null; }
 }
 async function vendorMenu(id){
   const v = S.vendors.find(x=>x.id===id); if(!v) return;
   const r = await ask({title:'업체 정보', fields:vendorFields(v), ok:'저장', extra:'업체 삭제'});
   if(!r) return;
   try{
-    if(!r.__extra){ if(r.name!==v.name || r.wechat!==(v.wechat||'')) await S.db.doc('vendors/'+id).update({name:r.name, wechat:r.wechat||''}); toast('저장했어요'); return; }
+    if(!r.__extra){ if(r.name!==v.name || r.wechat!==(v.wechat||'')) { ok(await sb.from('vendors').update({name:r.name, wechat:r.wechat||''}).eq('id',id)); Object.assign(v,{name:r.name, wechat:r.wechat||''}); renderAll(); } toast('저장했어요'); return; }
     const ps = S.products.filter(p=>p.vendorId===id);
     const ok = await ask({title:`'${v.name}' 삭제`, msg: ps.length ? `상품 ${ps.length}개는 '업체 미지정'으로 옮겨져요.` : '이 업체를 지울까요?', ok:'삭제', danger:true});
     if(!ok) return;
-    for(const p of ps) await S.db.doc('products/'+p.id).update({vendorId:''});
-    await S.db.doc('vendors/'+id).delete(); if(S.vendor===id) S.vendor='all'; renderAll();
+    ok(await sb.from('vendors').delete().eq('id',id)); // 상품의 업체는 자동으로 '미지정'이 돼요
+    S.vendors=S.vendors.filter(x=>x.id!==id); ps.forEach(p=>p.vendorId=''); if(S.vendor===id) S.vendor='all'; renderAll();
   }catch(e){ fail(e); }
 }
 async function copyText(t){
@@ -620,51 +658,39 @@ async function copyText(t){
   catch(_){ toast('위챗 아이디: ' + t); }
 }
 
-/* ---------- staff ---------- */
+/* ---------- staff (이 기기를 쓰는 사람) ---------- */
+function loadSlot(){ try{ const v=localStorage.getItem('sinsang_slot'); return v===null?-1:+v; }catch(_){ return -1; } }
 function openStaff(){
   const box = $('#slots'); const d=$('#dStaff');
   const draw = () => {
     box.innerHTML = [0,1,2].map(i => {
-      const s=S.staff[i], mine=i===S.mySlot, taken=s.uid && !mine;
+      const s=S.staff[i], mine=i===S.mySlot;
       return `<div class="slot${mine?' mine':''}" style="--c:${CV[i]}"><i></i><div class="info">
-        ${mine ? `<input data-label="${i}" value="${esc(s.label)}" aria-label="내 이름"><span>내 자리 · 이름을 바꾸면 바로 저장돼요</span>`
-               : `<b>${esc(s.label)}</b><span>${taken?'사용 중':'비어 있음'}</span>`}</div>
-        ${mine ? `<button class="btn sm" data-release="${i}" type="button">비우기</button>`
-               : taken ? `<button class="btn sm" data-release="${i}" type="button">자리 비우기</button>`
-               : `<button class="btn sm primary" data-claim="${i}" type="button" ${S.me&&S.canWrite?'':'disabled'}>이 자리로</button>`}</div>`;
-    }).join('') + (!S.me ? `<p style="color:var(--muted);font-size:13px">로그인 정보를 확인할 수 없어 자리를 고를 수 없어요.</p>` : '');
+        ${mine ? `<input data-label="${i}" value="${esc(s.label)}" aria-label="내 이름"><span>이 기기 · 이름을 바꾸면 모두에게 바로 반영돼요</span>`
+               : `<b>${esc(s.label)}</b><span>${['빨간','파란','초록'][i]} 별</span>`}</div>
+        ${mine ? '' : `<button class="btn sm primary" data-claim="${i}" type="button">나예요</button>`}</div>`;
+    }).join('');
   };
   draw(); d._draw = draw; if(!d.open) d.showModal();
 }
-async function writeStaff(patch){
-  const ref=S.db.doc('settings/staff');
-  const snap=await ref.get();
-  if(snap.exists) await ref.update(patch);
-  else { const full={}; [0,1,2].forEach(i=>full['s'+i]=patch['s'+i]||{uid:null,label:DEF[i]}); await ref.set(full); }
-}
-$('#slots').addEventListener('click', async e => {
-  const c=e.target.closest('[data-claim]'), r=e.target.closest('[data-release]');
-  try{
-    if(c){ const i=+c.dataset.claim, patch={};
-      if(S.mySlot>=0) patch['s'+S.mySlot]={uid:null,label:S.staff[S.mySlot].label};
-      const lab = S.staff[i].label===DEF[i] && S.myName ? S.myName : S.staff[i].label;
-      patch['s'+i]={uid:S.me,label:lab}; await writeStaff(patch); toast('자리를 정했어요'); $('#dStaff').close(); }
-    if(r){ const i=+r.dataset.release;
-      if(i!==S.mySlot && !(await ask({title:`'${S.staff[i].label}' 자리 비우기`, msg:'이 자리를 쓰던 사람은 다시 자리를 골라야 해요. 별표 기록은 그대로 남아요.', ok:'비우기', danger:true}))) return openStaff();
-      await writeStaff({['s'+i]:{uid:null,label:S.staff[i].label}}); openStaff(); }
-  }catch(err){ fail(err); }
+$('#slots').addEventListener('click', e => {
+  const c=e.target.closest('[data-claim]'); if(!c) return;
+  S.mySlot=+c.dataset.claim; try{ localStorage.setItem('sinsang_slot', S.mySlot); }catch(_){}
+  toast(`${S.staff[S.mySlot].label}(으)로 설정했어요`); $('#dStaff').close(); renderAll(); if(S.openId) drawDetail(false);
 });
 let labelT;
 $('#slots').addEventListener('input', e => {
   const inp=e.target.closest('[data-label]'); if(!inp) return; clearTimeout(labelT);
-  labelT=setTimeout(()=>{ const v=inp.value.trim(); if(v) writeStaff({['s'+inp.dataset.label]:{uid:S.me,label:v}}).catch(fail); }, 600);
+  labelT=setTimeout(async ()=>{ const v=inp.value.trim(); if(!v) return;
+    try{ ok(await sb.from('staff').update({label:v}).eq('slot',+inp.dataset.label)); S.staff[+inp.dataset.label].label=v; renderTop(); renderMain(); }catch(err){ fail(err); } }, 600);
 });
 
 /* ---------- detail ---------- */
 function openDetail(id){ S.openId=id; S.gIdx=0; drawDetail(true); const d=$('#dDetail'); if(!d.open) d.showModal(); markViewed(id); }
 async function markViewed(id){
   const p=S.products.find(x=>x.id===id); if(!p || S.mySlot<0 || !S.canWrite || viewed(p,S.mySlot)) return;
-  try{ await S.db.doc('products/'+id).update({views:{['s'+S.mySlot]: Date.now()}}); }catch(_){}
+  const t=new Date().toISOString(); p.views={...p.views, ['s'+S.mySlot]:t}; renderMain(); drawDetail(false);
+  try{ ok(await sb.from('products').update({['view'+S.mySlot]: t}).eq('id',id)); }catch(_){}
 }
 $('#dDetail').addEventListener('close', ()=>{ S.openId=null; });
 function drawDetail(full){
@@ -674,8 +700,8 @@ function drawDetail(full){
   const imgs = p.images||[];
   if(S.gIdx>=imgs.length) S.gIdx=0;
   if(full || $('#dStrip').childElementCount!==imgs.length){
-    $('#dStage').innerHTML = imgs.length ? `<img src="${blob(imgs[S.gIdx])}" alt="상품 사진 ${S.gIdx+1}">${imgs.length>1?'<button class="nav l" data-g="-1" aria-label="이전 사진">‹</button><button class="nav r" data-g="1" aria-label="다음 사진">›</button>':''}` : '<span style="color:var(--muted)">사진 없음</span>';
-    $('#dStrip').innerHTML = imgs.length>1 ? imgs.map((id,i)=>`<button class="${i===S.gIdx?'on':''}" data-gi="${i}" aria-label="사진 ${i+1}"><img loading="lazy" src="${blob(id)}" alt=""></button>`).join('') : '';
+    $('#dStage').innerHTML = imgs.length ? `<img src="${imgUrl(imgs[S.gIdx])}" alt="상품 사진 ${S.gIdx+1}">${imgs.length>1?'<button class="nav l" data-g="-1" aria-label="이전 사진">‹</button><button class="nav r" data-g="1" aria-label="다음 사진">›</button>':''}` : '<span style="color:var(--muted)">사진 없음</span>';
+    $('#dStrip').innerHTML = imgs.length>1 ? imgs.map((id,i)=>`<button class="${i===S.gIdx?'on':''}" data-gi="${i}" aria-label="사진 ${i+1}"><img loading="lazy" src="${imgUrl(id)}" alt=""></button>`).join('') : '';
   }
   const cm = S.comments.filter(c=>c.productId===p.id).sort((a,b)=>a.createdAt-b.createdAt);
   const draft = $('#cmtText') ? $('#cmtText').value : '';
@@ -695,10 +721,10 @@ function drawDetail(full){
       const cls=`lamp${on?' on':''}${seen?' seen':''}`;
       return `<div class="starrow">${mine&&S.canWrite?`<button type="button" class="${cls} mine" style="--c:${CV[i]}" data-star="${p.id}" aria-pressed="${on}" aria-label="내 별표">${STAR}</button>`:`<span class="${cls}" style="--c:${CV[i]}">${STAR}</span>`}
       <span class="lbl">${esc(S.staff[i].label)}${mine?' (나)':''}</span><span class="st">${on?'별표함':'별표 안 함'} · ${seen?'열람함':'안 봄'}${dd?' · 날짜 확인':''}</span></div>`}).join('')}</div>
-    ${p.qr?`<div class="box"><h4>QR 코드</h4><div class="qr"><img src="${blob(p.qr)}" alt="QR 코드"><a class="btn sm" href="${blob(p.qr)}" target="_blank" rel="noopener">크게 보기</a></div></div>`:''}
+    ${p.qr?`<div class="box"><h4>QR 코드</h4><div class="qr"><img src="${imgUrl(p.qr)}" alt="QR 코드"><a class="btn sm" href="${imgUrl(p.qr)}" target="_blank" rel="noopener">크게 보기</a></div></div>`:''}
     <div class="box"><h4>코멘트 <span class="num" style="color:var(--muted);font-weight:400">${cm.length}</span></h4>
       <div class="comments">${cm.length?cm.map(c=>{const i=c.slot; const lab=i>=0&&i<3?S.staff[i].label:'알 수 없음';
-        return `<div class="cmt" style="--c:${i>=0&&i<3?CV[i]:'var(--off)'}"><i></i><div><div class="who">${esc(lab)}<span class="when num">${fmtTime(c.createdAt)}</span>${c.uid&&c.uid===S.me?`<button class="del" data-delc="${c.id}" type="button">삭제</button>`:''}</div><p>${esc(c.text)}</p></div></div>`}).join(''):'<div style="color:var(--muted);font-size:14px">첫 코멘트를 남겨 보세요.</div>'}</div>
+        return `<div class="cmt" style="--c:${i>=0&&i<3?CV[i]:'var(--off)'}"><i></i><div><div class="who">${esc(lab)}<span class="when num">${fmtTime(c.createdAt)}</span>${c.slot===S.mySlot?`<button class="del" data-delc="${c.id}" type="button">삭제</button>`:''}</div><p>${esc(c.text)}</p></div></div>`}).join(''):'<div style="color:var(--muted);font-size:14px">첫 코멘트를 남겨 보세요.</div>'}</div>
       ${S.canWrite?`<div class="cmt-form"><textarea id="cmtText" rows="1" placeholder="${S.mySlot>=0?'코멘트 남기기':'자리를 먼저 골라 주세요'}"></textarea><button class="btn primary" id="cmtSend" type="button">등록</button></div>`:''}
     </div>`;
   if($('#cmtText')) $('#cmtText').value = draft;
@@ -706,7 +732,7 @@ function drawDetail(full){
 }
 function setG(i){
   const p=S.products.find(x=>x.id===S.openId); if(!p) return; const n=(p.images||[]).length; if(!n) return;
-  S.gIdx=(i+n)%n; const img=$('#dStage img'); if(img) img.src=blob(p.images[S.gIdx]);
+  S.gIdx=(i+n)%n; const img=$('#dStage img'); if(img) img.src=imgUrl(p.images[S.gIdx]);
   $('#dStrip').querySelectorAll('button').forEach((b,j)=>b.classList.toggle('on',j===S.gIdx));
 }
 $('#dDetail').addEventListener('click', e => {
@@ -714,7 +740,7 @@ $('#dDetail').addEventListener('click', e => {
   if(g) setG(S.gIdx + +g.dataset.g);
   if(gi) setG(+gi.dataset.gi);
   if(st) toggleStar(st.dataset.star);
-  if(dc) S.db.doc('comments/'+dc.dataset.delc).delete().catch(fail);
+  if(dc){ const cid=dc.dataset.delc; S.comments=S.comments.filter(c=>c.id!==cid); drawDetail(false); renderMain(); sb.from('comments').delete().eq('id',cid).then(r=>{ if(r.error){ fail(r.error); loadAll(); } }); }
   if(e.target.id==='cmtSend') sendComment();
 });
 $('#dDetail').addEventListener('keydown', e => {
@@ -725,7 +751,7 @@ let sending=false;
 async function sendComment(){
   if(S.mySlot<0) return openStaff();
   const t=$('#cmtText'), text=t.value.trim(); if(!text||sending) return; sending=true;
-  try{ await S.db.collection('comments').add({productId:S.openId, text:text.slice(0,2000), slot:S.mySlot, uid:S.me, createdAt:Date.now()}); t.value=''; }
+  try{ const row=ok(await sb.from('comments').insert({product_id:S.openId, text:text.slice(0,2000), slot:S.mySlot}).select().single()); upsertLocal(S.comments, fromComment(row)); t.value=''; drawDetail(false); renderMain(); }
   catch(e){ fail(e,'코멘트를 올리지 못했어요'); } sending=false;
 }
 $('#dEdit').onclick = () => { const p=S.products.find(x=>x.id===S.openId); if(p){ $('#dDetail').close(); openUpload(p); } };
@@ -733,18 +759,18 @@ $('#dDel').onclick = async () => {
   const p=S.products.find(x=>x.id===S.openId); if(!p) return;
   if(!(await ask({title:'상품 삭제', msg:`'${p.name||p.code}'과 사진, 코멘트를 모두 지울까요? 되돌릴 수 없어요.`, ok:'삭제', danger:true}))) return;
   try{
-    await S.db.doc('products/'+p.id).delete();
+    ok(await sb.from('products').delete().eq('id',p.id)); // 코멘트도 함께 지워져요
     $('#dDetail').close();
-    for(const c of S.comments.filter(c=>c.productId===p.id)) await S.db.doc('comments/'+c.id).delete();
-    if(S.assets) for(const id of new Set([...(p.images||[]), p.thumb, p.qr].filter(Boolean))) await S.assets.delete(id).catch(()=>{});
-    toast('삭제했어요'); refreshUsage();
+    S.products=S.products.filter(x=>x.id!==p.id); S.comments=S.comments.filter(c=>c.productId!==p.id); renderAll();
+    await removeImages([...new Set([...(p.images||[]), p.thumb, p.qr].filter(Boolean))]);
+    toast('삭제했어요');
   }catch(e){ fail(e,'삭제하지 못했어요'); }
 };
 
 /* ---------- image compression ---------- */
 async function toBitmap(src){
   let b = src;
-  if(typeof src==='string'){ const r=await fetch(src); b=await r.blob(); }
+  if(typeof src==='string'){ b = ok(await sb.storage.from(BUCKET).download(src)); }
   try{ return await createImageBitmap(b, {imageOrientation:'from-image'}); }
   catch(_){ return await new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=URL.createObjectURL(b); }); }
 }
@@ -770,8 +796,7 @@ function fillVendorSelect(sel){
 }
 $('#uVendor').onchange = e => { const n=e.target.value==='__new'; $('#uVendorNewBox').classList.toggle('hidden',!n); if(n) $('#uVendorNew').focus(); };
 function openUpload(p){
-  if(!S.assets) return toast('이 화면에서는 사진을 올릴 수 없어요');
-  U = { edit:p||null, items:(p?.images||[]).map(id=>({kind:'old',id,url:blob(id)})), qr:p?.qr?{kind:'old',id:p.qr,url:blob(p.qr)}:null, removed:[] };
+  U = { edit:p||null, items:(p?.images||[]).map(id=>({kind:'old',id,url:imgUrl(id)})), qr:p?.qr?{kind:'old',id:p.qr,url:imgUrl(p.qr)}:null, removed:[] };
   $('#uTitle').textContent = p ? '상품 수정' : '신상 올리기';
   $('#uCode').value=p?.code||''; $('#uName').value=p?.name||'';
   fillVendorSelect(p ? (p.vendorId||'') : (S.vendor!=='all'?S.vendor:''));
@@ -812,33 +837,34 @@ $('#uSave').onclick = async () => {
   try{
     let vendorId=$('#uVendor').value;
     if(vendorId==='__new'){ const nm=$('#uVendorNew').value.trim(); if(!nm){ btn.disabled=false; return toast('새 업체 이름을 적어 주세요'); }
-      const ex=S.vendors.find(v=>v.name===nm); vendorId = ex ? ex.id : (await S.db.collection('vendors').add({name:nm,wechat:$('#uVendorWechat').value.trim(),createdAt:Date.now()})).id; }
+      const ex=S.vendors.find(v=>v.name===nm); vendorId = ex ? ex.id : ok(await sb.from('vendors').insert({name:nm,wechat:$('#uVendorWechat').value.trim()}).select().single()).id; }
     const ids=[]; let n=0; const total=U.items.filter(i=>i.kind==='new').length;
     for(const it of U.items){
       if(it.kind==='old'){ ids.push(it.id); continue; }
       prog.textContent=`사진 줄이고 올리는 중 ${++n}/${total}`;
-      const r=await S.assets.upload(await compress(it.file,1600,.8)); uploaded.push(r.id); ids.push(r.id);
+      const path=await putImage(await compress(it.file,1600,.8)); uploaded.push(path); ids.push(path);
     }
     const p=U.edit; let thumb=p?.thumb||null; const oldThumb=thumb;
     if(!p || ids[0]!==(p.images||[])[0] || !thumb){
       prog.textContent='목록용 작은 사진 만드는 중';
-      const cover=U.items[0]; const r=await S.assets.upload(await compress(cover.kind==='new'?cover.file:blob(cover.id),480,.72)); uploaded.push(r.id); thumb=r.id;
+      const cover=U.items[0]; const path=await putImage(await compress(cover.kind==='new'?cover.file:cover.id,480,.72)); uploaded.push(path); thumb=path;
     }
     let qr = U.qr?.kind==='old' ? U.qr.id : null;
-    if(U.qr?.kind==='new'){ prog.textContent='QR 올리는 중'; const r=await S.assets.upload(await compress(U.qr.file,700,.92)); uploaded.push(r.id); qr=r.id; }
-    const priceRaw=$('#uPrice').value.replace(/[¥,\s]/g,''); const price = priceRaw==='' ? null : (isNaN(+priceRaw) ? priceRaw : +priceRaw);
+    if(U.qr?.kind==='new'){ prog.textContent='QR 올리는 중'; const path=await putImage(await compress(U.qr.file,700,.92)); uploaded.push(path); qr=path; }
+    const priceRaw=$('#uPrice').value.replace(/[¥,\s]/g,''); const price = priceRaw==='' ? null : priceRaw;
     const data={code,name,vendorId,date:$('#uDate').value||today(),price,colors:$('#uColors').value.split(/[,，、\n]/).map(s=>s.trim()).filter(Boolean),images:ids,thumb,qr,updatedAt:Date.now()};
     prog.textContent='저장 중';
-    if(p) await S.db.doc('products/'+p.id).update(data);
-    else await S.db.collection('products').doc().set({...data,stars:{},createdAt:Date.now(),createdBy:S.me});
+    const row = p ? ok(await sb.from('products').update(toProduct(data)).eq('id',p.id).select().single())
+                  : ok(await sb.from('products').insert({id:newId(), ...toProduct(data)}).select().single());
+    upsertLocal(S.products, fromProduct(row)); renderAll();
     // clean up replaced assets
     const junk=[...U.removed]; if(oldThumb && oldThumb!==thumb) junk.push(oldThumb);
-    for(const id of junk) await S.assets.delete(id).catch(()=>{});
+    await removeImages(junk);
     U.items.forEach(i=>i.kind==='new'&&URL.revokeObjectURL(i.url));
-    $('#dUp').close(); toast(p?'수정했어요':'신상을 올렸어요'); refreshUsage();
+    $('#dUp').close(); toast(p?'수정했어요':'신상을 올렸어요');
   }catch(e){
     fail(e,'저장하지 못했어요');
-    for(const id of uploaded) S.assets.delete(id).catch(()=>{});
+    removeImages(uploaded);
     prog.textContent=''; btn.disabled=false;
   }
 };
@@ -865,67 +891,92 @@ document.addEventListener('click', e => {
 document.addEventListener('keydown', e => { const r=e.target.closest?.('#side [data-vendor][role=button]'); if(r && (e.key==='Enter'||e.key===' ')){ e.preventDefault(); r.click(); } });
 
 /* ---------- boot ---------- */
-async function refreshUsage(){ if(!S.assets) return; try{ S.usage=(await S.assets.list()).usage; renderSide(); }catch(_){} }
-function onErr(e){ if(e.code==='revoked'||e.code==='not_granted'){ S.problem='이 화면에서 데이터에 접근할 수 없게 됐어요. 페이지를 새로고침해 주세요.'; renderAll(); } }
-
-/* ---------- password gate ---------- */
-const PASS_HASH='7387fe201f03d245b1d7f5ef22e46ff10e210335d38860e8b21d35a74704d913';
-const GATE_KEY='sinsang_gate';
-async function sha256(t){
-  const bytes=new TextEncoder().encode(t);
-  if(window.crypto && crypto.subtle){ const b=await crypto.subtle.digest('SHA-256', bytes); return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join(''); }
-  // fallback for non-secure contexts
-  const K=[];let n=2;while(K.length<64){let p=1;for(let d=2;d*d<=n;d++)if(n%d===0){p=0;break}if(p)K.push((Math.cbrt(n)%1)*2**32|0);n++}
-  const H=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
-  const l=bytes.length,m=new Uint8Array(((l+9+63)>>6)<<6);m.set(bytes);m[l]=0x80;const dv=new DataView(m.buffer);dv.setUint32(m.length-4,l*8);
-  const r=(x,k)=>x>>>k|x<<(32-k),W=new Array(64);
-  for(let o=0;o<m.length;o+=64){for(let i=0;i<64;i++)W[i]=i<16?dv.getUint32(o+i*4):(r(W[i-2],17)^r(W[i-2],19)^W[i-2]>>>10)+W[i-7]+(r(W[i-15],7)^r(W[i-15],18)^W[i-15]>>>3)+W[i-16]|0;
-    let[a,b,c,d,e,f,g,h]=H;for(let i=0;i<64;i++){const t1=h+(r(e,6)^r(e,11)^r(e,25))+(e&f^~e&g)+K[i]+W[i]|0,t2=(r(a,2)^r(a,13)^r(a,22))+(a&b^a&c^b&c)|0;h=g;g=f;f=e;e=d+t1|0;d=c;c=b;b=a;a=t1+t2|0}
-    [a,b,c,d,e,f,g,h].forEach((v,i)=>H[i]=H[i]+v|0)}
-  return H.map(v=>(v>>>0).toString(16).padStart(8,'0')).join('');
+/* ---------- storage ---------- */
+async function putImage(b){
+  const ext = b.type==='image/webp' ? 'webp' : b.type==='image/png' ? 'png' : 'jpg';
+  const path = `${new Date().toISOString().slice(0,7)}/${newId()}.${ext}`;
+  ok(await sb.storage.from(BUCKET).upload(path, b, {contentType:b.type||'image/jpeg', cacheControl:'31536000', upsert:false}));
+  return path;
 }
-function gateOk(){ try{ return localStorage.getItem(GATE_KEY)===PASS_HASH || sessionStorage.getItem(GATE_KEY)===PASS_HASH; }catch(_){ return false; } }
+async function removeImages(paths){ paths=(paths||[]).filter(Boolean); if(!paths.length) return; try{ await sb.storage.from(BUCKET).remove(paths); }catch(_){} }
+
+/* ---------- rows <-> app objects ---------- */
+const fromProduct = r => ({id:r.id, code:r.code||'', name:r.name||'', vendorId:r.vendor_id||'', date:r.date||'', price:r.price,
+  colors:r.colors||[], images:r.images||[], thumb:r.thumb, qr:r.qr,
+  stars:{s0:!!r.star0, s1:!!r.star1, s2:!!r.star2}, views:{s0:r.view0, s1:r.view1, s2:r.view2}, createdAt:Date.parse(r.created_at)||0});
+const toProduct = d => ({code:d.code, name:d.name, vendor_id:d.vendorId||null, date:d.date, price:d.price, colors:d.colors,
+  images:d.images, thumb:d.thumb, qr:d.qr, updated_at:new Date().toISOString()});
+const fromVendor = r => ({id:r.id, name:r.name, wechat:r.wechat||''});
+const fromComment = r => ({id:r.id, productId:r.product_id, slot:r.slot, text:r.text, createdAt:Date.parse(r.created_at)||0});
+function upsertLocal(arr, obj){ const i=arr.findIndex(x=>x.id===obj.id); if(i<0) arr.push(obj); else arr[i]=obj; }
+
+async function fetchAll(table, order){
+  const out=[];
+  for(let from=0;;from+=1000){
+    let q=sb.from(table).select('*'); if(order) q=q.order(order,{ascending:true});
+    const rows=ok(await q.range(from, from+999)); out.push(...rows); if(rows.length<1000) return out;
+  }
+}
+let lastLoad=0;
+async function loadAll(){
+  lastLoad=Date.now();
+  try{
+    const [p,v,c,d,st] = await Promise.all([fetchAll('products','created_at'), fetchAll('vendors','created_at'), fetchAll('comments','created_at'), fetchAll('daychecks'), fetchAll('staff','slot')]);
+    S.products=p.map(fromProduct); S.vendors=v.map(fromVendor); S.comments=c.map(fromComment);
+    S.checks={}; d.forEach(r=>S.checks[r.date]={s0:!!r.c0, s1:!!r.c1, s2:!!r.c2});
+    S.staff=[0,1,2].map(i=>({label:(st.find(r=>r.slot===i)||{}).label||DEF[i]}));
+    S.problem='';
+  }catch(e){
+    console.error(e);
+    S.problem = /JWT|auth/i.test(e.message||'') ? '로그인이 만료됐어요. 자물쇠 버튼을 눌러 다시 들어와 주세요.' : '데이터를 불러오지 못했어요: ' + (e.message||e);
+  }
+  renderAll(); if(S.openId) drawDetail(false);
+  if($('#dStaff').open) $('#dStaff')._draw();
+}
+function applyChange(table, pl){
+  const n=pl.new, o=pl.old, del=pl.eventType==='DELETE';
+  if(table==='products'){ if(del) S.products=S.products.filter(x=>x.id!==o.id); else upsertLocal(S.products, fromProduct(n)); }
+  if(table==='vendors'){ if(del) S.vendors=S.vendors.filter(x=>x.id!==o.id); else upsertLocal(S.vendors, fromVendor(n)); }
+  if(table==='comments'){ if(del) S.comments=S.comments.filter(x=>x.id!==o.id); else upsertLocal(S.comments, fromComment(n)); }
+  if(table==='daychecks'){ if(del) delete S.checks[o.date]; else S.checks[n.date]={s0:!!n.c0, s1:!!n.c1, s2:!!n.c2}; }
+  if(table==='staff' && !del && n.slot>=0 && n.slot<3) S.staff[n.slot]={label:n.label||DEF[n.slot]};
+  renderAll(); if(S.openId) drawDetail(false);
+}
+
+/* ---------- 로그인 (공용 계정 + 비밀번호) ---------- */
+const showGate = msg => { $('#gate').classList.remove('hidden'); if(msg) $('#gateErr').textContent=msg; setTimeout(()=>$('#gatePw').focus(),50); };
 $('#gatePw').addEventListener('input', e => { $('#gateGo').disabled = !e.target.value; $('#gateErr').textContent=''; });
 $('#gateForm').addEventListener('submit', async e => {
   e.preventDefault();
-  const pw=$('#gatePw').value; if(!pw) return;
-  let h=''; try{ h=await sha256(pw); }catch(_){ $('#gateErr').textContent='이 브라우저에서는 잠금을 풀 수 없어요. 최신 브라우저로 열어 주세요.'; return; }
-  if(h!==PASS_HASH){ $('#gateErr').textContent='비밀번호가 맞지 않아요.'; const c=$('.gate-card'); c.classList.remove('shake'); void c.offsetWidth; c.classList.add('shake'); $('#gatePw').select(); return; }
-  try{ ($('#gateKeep').checked ? localStorage : sessionStorage).setItem(GATE_KEY, PASS_HASH); }catch(_){}
+  const pw=$('#gatePw').value; if(!pw || !sb) return;
+  $('#gateGo').disabled=true;
+  const {error} = await sb.auth.signInWithPassword({email:TEAM_EMAIL, password:pw});
+  $('#gateGo').disabled=false;
+  if(error){
+    $('#gateErr').textContent = /invalid/i.test(error.message) ? '비밀번호가 맞지 않아요.' : '들어가지 못했어요: ' + error.message;
+    const c=$('.gate-card'); c.classList.remove('shake'); void c.offsetWidth; c.classList.add('shake'); $('#gatePw').select(); return;
+  }
   $('#gatePw').value=''; $('#gate').classList.add('hidden'); start();
 });
-$('#lockBtn').onclick = () => {
-  try{ localStorage.removeItem(GATE_KEY); sessionStorage.removeItem(GATE_KEY); }catch(_){}
-  location.reload();
-};
+$('#lockBtn').onclick = async () => { try{ await sb.auth.signOut(); }catch(_){} location.reload(); };
 
 let started=false;
-function start(){ if(started) return; started=true; renderAll(); boot(); }
-if(gateOk()){ $('#gate').classList.add('hidden'); start(); } else { setTimeout(()=>$('#gatePw').focus(), 50); }
-
-async function boot(){
-  if(!window.claude || !window.claude.use){ S.problem='이 페이지는 claude.ai에 게시된 상태에서만 데이터를 저장하고 불러올 수 있어요.'; return renderAll(); }
-  const [db, user, assets] = await Promise.all(['db','user','assets'].map(n => window.claude.use(n).catch(()=>null)));
-  S.db=db; S.user=user; S.assets=assets;
-  if(!db){ S.problem='데이터 저장소를 열 수 없어요. 조직 계정으로 로그인했는지 확인하고 새로고침해 주세요.'; return renderAll(); }
-  if(user){ const me=await user.me(); S.me=me.id; S.myName=me.name||''; const w=await user.can('data.write'); if(w===false) S.canWrite=false; }
-  document.body.classList.toggle('ro', !S.canWrite);
-  let prompted=false;
-  db.doc('settings/staff').onSnapshot(s => {
-    const d=s.data()||{};
-    S.staff=[0,1,2].map(i=>({uid:d['s'+i]?.uid||null,label:d['s'+i]?.label||DEF[i]}));
-    S.mySlot=S.me ? S.staff.findIndex(x=>x.uid===S.me) : -1;
-    if(S.mySlot<0 && (S.star==='mine'||S.star==='unseen')) S.star='all';
-    renderAll(); if(S.openId) drawDetail(false);
-    if($('#dStaff').open) $('#dStaff')._draw();
-    if(!prompted && !s.metadata.fromCache && S.mySlot<0 && S.me && S.canWrite){ prompted=true; openStaff(); }
-  }, onErr);
-  db.collection('products').limit(1000).onSnapshot(s => { S.products=s.docs.map(d=>({id:d.id,...d.data()})); renderAll(); if(S.openId) drawDetail(false); }, onErr);
-  db.collection('vendors').limit(300).onSnapshot(s => { S.vendors=s.docs.map(d=>({id:d.id,...d.data()})); renderAll(); }, onErr);
-  db.collection('daychecks').limit(1000).onSnapshot(s => { const c={}; s.docs.forEach(d=>c[d.id]=d.data()); S.checks=c; renderAll(); }, onErr);
-  db.collection('comments').limit(1000).onSnapshot(s => { S.comments=s.docs.map(d=>({id:d.id,...d.data()})); renderMain(); if(S.openId) drawDetail(false); }, onErr);
-  refreshUsage();
+function start(){
+  if(started) return; started=true; S.assets=true;
+  S.mySlot=loadSlot(); renderAll(); loadAll();
+  const ch=sb.channel('board');
+  ['products','vendors','comments','daychecks','staff'].forEach(t => ch.on('postgres_changes', {event:'*', schema:'public', table:t}, pl => applyChange(t, pl)));
+  ch.subscribe();
+  document.addEventListener('visibilitychange', () => { if(!document.hidden && Date.now()-lastLoad > 30000) loadAll(); });
+  if(S.mySlot<0) setTimeout(openStaff, 300);
 }
+(async () => {
+  if(!CONFIGURED){ $('#gateSub').textContent='설정이 필요해요'; return showGate('index.html 맨 위의 SUPABASE_URL과 SUPABASE_KEY를 채워 주세요.'); }
+  if(!sb) return showGate('Supabase 라이브러리를 불러오지 못했어요. 인터넷 연결을 확인하고 새로고침해 주세요.');
+  const {data:{session}} = await sb.auth.getSession();
+  if(session){ $('#gate').classList.add('hidden'); start(); } else showGate();
+  sb.auth.onAuthStateChange(ev => { if(ev==='SIGNED_OUT' && started) location.reload(); });
+})();
 </script>
 </body>
 </html>
