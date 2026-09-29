@@ -336,9 +336,12 @@ dialog.narrow{width:min(440px,calc(100vw - 40px))}
 .sh-tb img{width:44px;height:55px;object-fit:cover;border-radius:4px;background:#eee;display:block}
 .sh-tb tfoot td{font-weight:700;font-size:14px;border-bottom:0;border-top:2px solid #111}
 .sh-memo{margin-top:14px;background:#f7f7f8;border-radius:8px;padding:10px 12px;white-space:pre-wrap}
+.olock{max-width:360px;margin:30px 0}
+.olock-note{color:var(--muted);font-size:13px;margin:6px 0 0}
 #printArea{display:none}
 @media print{
-  @page{size:A4;margin:12mm}
+  @page{size:A4;margin:0}
+  #printArea{padding:12mm}
   :root{padding:0!important}
   body{background:#fff!important}
   body>*:not(#printArea){display:none!important}
@@ -508,10 +511,13 @@ body.ro .w-only{display:none!important}
 const SUPABASE_URL  = 'https://pnhmlpzrbwqcwkqcrqcy.supabase.co';   // Project URL
 const SUPABASE_KEY  = 'sb_publishable_YMlQcoGuVQrTI7mARP9pWA_FOTgpUhZ';          // publishable key (또는 anon public key)
 const TEAM_EMAIL    = 'team@sinsang-board.com';                // Supabase에 만든 공용 계정 이메일
+const ORDER_EMAIL   = 'orders@sinsang-board.com';              // 발주 내역 전용 계정 이메일 (발주 암호용)
 const BUCKET        = 'photos';
 /* ============================================================ */
 const CONFIGURED = !SUPABASE_URL.includes('YOUR-') && !SUPABASE_KEY.includes('YOUR-');
 const sb = CONFIGURED && window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+// 발주 내역은 별도 계정으로 잠금 (탭을 닫으면 다시 잠겨요)
+const sbo = sb ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {auth:{storageKey:'sinsang-orders-auth', storage:window.sessionStorage, persistSession:true}}) : null;
 const ok = r => { if(r.error) throw r.error; return r.data; };
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==='x'?r:(r&3|8)).toString(16)}));
 const $ = s => document.querySelector(s);
@@ -583,7 +589,7 @@ function ask({title, msg='', fields=null, ok='확인', danger=false, extra=null}
   return new Promise(res => {
     const d=$('#dAsk'), okB=$('#aOk'), exB=$('#aExtra'), box=$('#aFields');
     $('#aTitle').textContent=title; $('#aMsg').textContent=msg; $('#aMsg').classList.toggle('hidden',!msg);
-    box.innerHTML = (fields||[]).map((f,i)=>`<label>${esc(f.label)}${f.optional?' <span>(선택)</span>':''}<input data-k="${esc(f.key)}" value="${esc(f.value||'')}" placeholder="${esc(f.placeholder||'')}" autocomplete="off"></label>`).join('');
+    box.innerHTML = (fields||[]).map((f,i)=>`<label>${esc(f.label)}${f.optional?' <span>(선택)</span>':''}<input data-k="${esc(f.key)}" type="${f.type||'text'}" value="${esc(f.value||'')}" placeholder="${esc(f.placeholder||'')}" autocomplete="off"></label>`).join('');
     box.classList.toggle('hidden', !fields);
     okB.textContent=ok; okB.className = 'btn ' + (danger ? 'danger-fill' : 'primary');
     exB.textContent = extra || ''; exB.classList.toggle('hidden', !extra);
@@ -665,7 +671,7 @@ function renderSide(){
     h += `<div class="row${pv&&S.vendor===v.id?' on':''}" data-vendor="${v.id}" role="button" tabindex="0"><span class="lbl">${esc(v.name)}</span><span class="cnt num">${counts[v.id]||0}</span><button class="more w-only" data-vmenu="${v.id}" aria-label="${esc(v.name)} 관리" type="button">⋯</button></div>`;
   });
   if(counts['']) h += `<button class="row${pv&&S.vendor===''?' on':''}" data-vendor=""><span class="lbl">업체 미지정</span><span class="cnt num">${counts['']}</span></button>`;
-  h += `</div><h3>발주</h3><div class="list"><button class="row${S.view==='orders'?' on':''}" data-view="orders" type="button"><span class="lbl">발주 내역</span><span class="cnt num">${S.orders.length}</span></button></div>`;
+  h += `</div><h3>발주</h3><div class="list"><button class="row${S.view==='orders'?' on':''}" data-view="orders" type="button"><span class="lbl">발주 내역</span><span class="cnt num">${S.ordersUnlocked ? S.orders.length : '잠김'}</span></button></div>`;
   if(S.usage) { const u=S.usage, pct=Math.min(100, u.bytes/u.maxBytes*100);
     h += `<div class="meter">사진 저장 공간 <span class="num">${fmtMB(u.bytes)} / ${fmtMB(u.maxBytes)}</span> · ${u.files}장<div class="bar"><i style="width:${pct}%"></i></div></div>`; }
   $('#side').innerHTML = h;
@@ -1009,6 +1015,8 @@ document.addEventListener('click', e => {
   const op=t.closest('#main [data-open]'); if(op){ if(S.selectMode) toggleCart(op.dataset.open); else openDetail(op.dataset.open); return; }
   const or=t.closest('[data-order]'); if(or){ openOrderView(or.dataset.order); return; }
   const vw=t.closest('[data-view]'); if(vw){ S.view=vw.dataset.view; S.selectMode=false; renderAll(); window.scrollTo(0,0); return; }
+  const ovw=t.closest('[data-oview]'); if(ovw){ S.orderView=ovw.dataset.oview; renderMain(); return; }
+  if(t.closest('[data-olock]')){ lockOrders(); toast('발주 내역을 잠갔어요'); return; }
   if(t.closest('[data-selmode]')){ S.selectMode=!S.selectMode; renderMain(); renderCartBar(); return; }
   const vm=t.closest('[data-vmenu]'); if(vm){ e.stopPropagation(); vendorMenu(vm.dataset.vmenu); return; }
   const dt=t.closest('#side [data-date]'); if(dt){ S.view='products'; S.date=dt.dataset.date; renderAll(); return; }
@@ -1025,7 +1033,7 @@ document.addEventListener('keydown', e => { const r=e.target.closest?.('#side [d
 /* ---------- boot ---------- */
 /* ---------- 발주 (선택 → 발주서) ---------- */
 S.cart = (()=>{ try{ return JSON.parse(localStorage.getItem('sinsang_cart')||'[]'); }catch(_){ return []; } })();
-S.orders = []; S.selectMode = false; S.view = 'products'; S.ordersMissing = false;
+S.orders = []; S.selectMode = false; S.view = 'products'; S.ordersMissing = false; S.ordersUnlocked = false; S.orderView = 'recent';
 const saveCart = () => { try{ localStorage.setItem('sinsang_cart', JSON.stringify(S.cart)); }catch(_){} };
 const inCart = id => S.cart.includes(id);
 const num = v => { const n=parseFloat(String(v??'').replace(/[^\d.]/g,'')); return isNaN(n) ? 0 : n; };
@@ -1130,6 +1138,11 @@ $('#dOrder').addEventListener('click', e => {
 let savingOrder=false;
 async function saveOrders(){
   if(savingOrder) return;
+  if(!S.ordersUnlocked){
+    const r = await ask({title:'발주 암호', msg:'발주서를 저장하려면 발주 암호를 입력해 주세요.', fields:[{key:'pw', label:'발주 암호', type:'password', required:true}], ok:'확인'});
+    if(!r) return;
+    if(!(await unlockOrders(r.pw))) return toast('발주 암호가 맞지 않아요');
+  }
   let dropped=0;
   const vendors = D.vendors.map(v => ({...v, items: v.items.map(it => {
       const lines = it.lines.filter(l => (parseInt(l.qty)||0) > 0).map(l => ({color:l.color.trim(), qty:parseInt(l.qty)}));
@@ -1141,7 +1154,7 @@ async function saveOrders(){
     items:v.items, total_qty:v.items.reduce((a,it)=>a+lineQty(it),0), total_amount:v.items.reduce((a,it)=>a+itemAmt(it),0)}));
   savingOrder=true; $('#oSave').disabled=true;
   try{
-    const saved = ok(await sb.from('orders').insert(rows).select());
+    const saved = ok(await sbo.from('orders').insert(rows).select());
     saved.forEach(r => upsertLocal(S.orders, fromOrder(r)));
     const done = new Set(vendors.flatMap(v=>v.items.map(it=>it.productId)));
     S.cart = S.cart.filter(id => !done.has(id)); saveCart();
@@ -1155,25 +1168,73 @@ async function saveOrders(){
 /* ---- 발주 내역 ---- */
 function renderOrders(){
   const m=$('#main');
-  let h = `<div class="hero"><h1>발주 내역</h1><p>발주서 ${S.orders.length}건</p></div>`;
+  if(!S.ordersUnlocked){
+    if($('#olockForm')) return; // 입력 중인 암호가 지워지지 않게
+    m.innerHTML = `<div class="hero"><h1>발주 내역</h1><p>발주 암호를 입력하면 볼 수 있어요</p></div>
+      <form class="olock" id="olockForm" autocomplete="off"><div class="gate-in"><input id="olockPw" type="password" placeholder="발주 암호" aria-label="발주 암호"><button type="submit" aria-label="열기">→</button></div>
+      <div class="gate-err" id="olockErr" role="alert"></div><p class="olock-note">창을 닫으면 다시 잠겨요.</p></form>`;
+    setTimeout(()=>$('#olockPw')?.focus(), 30); return;
+  }
+  const total = S.orders.reduce((a,o)=>a+o.totalAmount,0);
+  let h = `<div class="hero"><h1>발주 내역</h1><p class="num">발주서 ${S.orders.length}건 · ${money(total)}</p></div>`;
+  const vb = (k,l) => `<button class="${S.orderView===k?'on':''}" data-oview="${k}" type="button">${l}</button>`;
+  h += `<div class="filters"><div class="seg" role="group" aria-label="보기 방식">${vb('recent','최신순')}${vb('vendor','업체별')}${vb('date','날짜별')}</div>
+    <button class="btn sm" data-olock type="button">발주 내역 잠그기</button></div>`;
   if(S.ordersMissing) h += `<div class="notice">발주 기능을 쓰려면 Supabase SQL Editor에서 supabase-orders.sql을 한 번 실행해 주세요.</div>`;
   if(!S.orders.length){
     h += `<div class="empty"><h2>아직 만든 발주서가 없어요</h2><div>상품 목록에서 '발주 담기'로 마음에 드는 샘플을 고른 뒤 발주서를 만들어 보세요.</div><button class="btn primary" type="button" data-view="products">상품 보러 가기</button></div>`;
     m.innerHTML=h; return;
   }
-  const byD={}; S.orders.forEach(o => (byD[o.date] ||= []).push(o));
-  Object.keys(byD).sort().reverse().forEach(d => {
-    const list=byD[d].sort((a,b)=>b.createdAt-a.createdAt);
-    h += `<section class="group"><div class="group-h"><h2>${esc(dayLabel(d,true))}</h2><span class="n num">${list.length}건</span></div><div class="olist">`;
-    list.forEach(o => {
+  const newest = (a,b) => (b.date||'').localeCompare(a.date||'') || b.createdAt-a.createdAt;
+  let sections;
+  if(S.orderView==='vendor'){
+    const g={}; S.orders.forEach(o => (g[o.vendorName] ||= []).push(o));
+    sections = Object.keys(g).sort((a,b)=>a.localeCompare(b,'ko')).map(k => ({title:k, list:g[k].sort(newest)}));
+  } else if(S.orderView==='date'){
+    const g={}; S.orders.forEach(o => (g[o.date] ||= []).push(o));
+    sections = Object.keys(g).sort().reverse().map(k => ({title:dayLabel(k,true), list:g[k].sort((a,b)=>b.createdAt-a.createdAt)}));
+  } else {
+    sections = [{title:null, list:[...S.orders].sort((a,b)=>b.createdAt-a.createdAt)}];
+  }
+  sections.forEach(sec => {
+    const st = sec.list.reduce((a,o)=>a+o.totalAmount,0);
+    h += `<section class="group">${sec.title!==null?`<div class="group-h"><h2>${esc(sec.title)}</h2><span class="n num">${sec.list.length}건 · ${money(st)}</span></div>`:''}<div class="olist">`;
+    sec.list.forEach(o => {
       const who = o.slot>=0 && o.slot<3 ? `<span class="who-dot" style="--c:${CV[o.slot]}"><i></i>${esc(S.staff[o.slot].label)}</span>` : '';
-      h += `<button class="orow" type="button" data-order="${o.id}"><span class="ov">${esc(o.vendorName)}</span><span class="oa num">${money(o.totalAmount)}</span>
-        <span class="om num"><span>${orderNo(o)}</span><span>상품 ${o.items.length}개 · ${o.totalQty}장</span>${who}${o.memo?`<span class="omemo">${esc(o.memo)}</span>`:''}</span></button>`;
+      const head = S.orderView==='vendor' ? dayLabel(o.date,true) : o.vendorName;
+      const dateTag = S.orderView==='recent' ? `<span>${esc(dayLabel(o.date))}</span>` : '';
+      h += `<button class="orow" type="button" data-order="${o.id}"><span class="ov">${esc(head)}</span><span class="oa num">${money(o.totalAmount)}</span>
+        <span class="om num">${dateTag}<span>${orderNo(o)}</span><span>상품 ${o.items.length}개 · ${o.totalQty}장</span>${who}${o.memo?`<span class="omemo">${esc(o.memo)}</span>`:''}</span></button>`;
     });
     h += `</div></section>`;
   });
   m.innerHTML=h;
 }
+async function unlockOrders(pw){
+  const {error} = await sbo.auth.signInWithPassword({email:ORDER_EMAIL, password:pw});
+  if(error) return false;
+  await onOrdersUnlocked(); return true;
+}
+let ordersCh=null;
+async function onOrdersUnlocked(){
+  S.ordersUnlocked=true;
+  try{ S.orders=(await fetchAll('orders','created_at',sbo)).map(fromOrder); S.ordersMissing=false; }
+  catch(e){ console.warn(e); S.orders=[]; S.ordersMissing=true; }
+  if(!ordersCh) ordersCh = sbo.channel('orders').on('postgres_changes', {event:'*', schema:'public', table:'orders'}, pl => applyChange('orders', pl)).subscribe();
+  renderAll();
+}
+async function lockOrders(){
+  try{ await sbo.auth.signOut({scope:'local'}); }catch(_){}
+  if(ordersCh){ try{ sbo.removeChannel(ordersCh); }catch(_){} ordersCh=null; }
+  S.ordersUnlocked=false; S.orders=[]; if($('#dOV').open) $('#dOV').close(); renderAll();
+}
+document.addEventListener('submit', async e => {
+  if(e.target.id!=='olockForm') return;
+  e.preventDefault();
+  const pw=$('#olockPw').value; if(!pw) return;
+  const okk = await unlockOrders(pw);
+  if(!okk){ $('#olockErr').textContent='발주 암호가 맞지 않아요.'; const f=$('#olockForm'); f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake'); $('#olockPw').select(); }
+});
 function sheetHtml(o, src){
   let rows='';
   o.items.forEach((it,ii) => { const price=num(it.price), L=it.lines.length;
@@ -1255,7 +1316,7 @@ $('#dOV').addEventListener('click', async e => {
   if(a==='csv'){ downloadBlob(new Blob([orderCsv(o)],{type:'text/csv;charset=utf-8'}), safeName(`발주서_${o.vendorName}_${o.date}.csv`)); }
   if(a==='del'){
     if(!(await ask({title:'발주서 삭제', msg:`${o.vendorName} 발주서(${orderNo(o)})를 지울까요?`, ok:'삭제', danger:true}))) return;
-    try{ ok(await sb.from('orders').delete().eq('id',o.id)); S.orders=S.orders.filter(x=>x.id!==o.id); $('#dOV').close(); renderAll(); toast('삭제했어요'); }catch(err){ fail(err); }
+    try{ ok(await sbo.from('orders').delete().eq('id',o.id)); S.orders=S.orders.filter(x=>x.id!==o.id); $('#dOV').close(); renderAll(); toast('삭제했어요'); }catch(err){ fail(err); }
   }
 });
 
@@ -1278,10 +1339,10 @@ const fromVendor = r => ({id:r.id, name:r.name, wechat:r.wechat||''});
 const fromComment = r => ({id:r.id, productId:r.product_id, slot:r.slot, text:r.text, createdAt:Date.parse(r.created_at)||0});
 function upsertLocal(arr, obj){ const i=arr.findIndex(x=>x.id===obj.id); if(i<0) arr.push(obj); else arr[i]=obj; }
 
-async function fetchAll(table, order){
+async function fetchAll(table, order, client=sb){
   const out=[];
   for(let from=0;;from+=1000){
-    let q=sb.from(table).select('*'); if(order) q=q.order(order,{ascending:true});
+    let q=client.from(table).select('*'); if(order) q=q.order(order,{ascending:true});
     const rows=ok(await q.range(from, from+999)); out.push(...rows); if(rows.length<1000) return out;
   }
 }
@@ -1290,8 +1351,8 @@ async function loadAll(){
   lastLoad=Date.now();
   try{
     const [p,v,c,d,st,od] = await Promise.all([fetchAll('products','created_at'), fetchAll('vendors','created_at'), fetchAll('comments','created_at'), fetchAll('daychecks'), fetchAll('staff','slot'),
-      fetchAll('orders','created_at').then(r=>{ S.ordersMissing=false; return r; }).catch(e=>{ console.warn(e); S.ordersMissing=true; return []; })]);
-    S.orders=od.map(fromOrder);
+      S.ordersUnlocked ? fetchAll('orders','created_at',sbo).then(r=>{ S.ordersMissing=false; return r; }).catch(e=>{ console.warn(e); S.ordersMissing=true; return []; }) : Promise.resolve(null)]);
+    if(od) S.orders=od.map(fromOrder);
     S.products=p.map(fromProduct); S.vendors=v.map(fromVendor); S.comments=c.map(fromComment);
     S.checks={}; d.forEach(r=>S.checks[r.date]={s0:!!r.c0, s1:!!r.c1, s2:!!r.c2});
     S.staff=[0,1,2].map(i=>({label:(st.find(r=>r.slot===i)||{}).label||DEF[i]}));
@@ -1329,15 +1390,16 @@ $('#gateForm').addEventListener('submit', async e => {
   }
   $('#gatePw').value=''; $('#gate').classList.add('hidden'); start();
 });
-$('#lockBtn').onclick = async () => { try{ await sb.auth.signOut(); }catch(_){} location.reload(); };
+$('#lockBtn').onclick = async () => { try{ await sbo.auth.signOut({scope:'local'}); await sb.auth.signOut({scope:'local'}); }catch(_){} location.reload(); };
 
 let started=false;
 function start(){
   if(started) return; started=true; S.assets=true;
   S.mySlot=loadSlot(); renderAll(); loadAll();
   const ch=sb.channel('board');
-  ['products','vendors','comments','daychecks','staff','orders'].forEach(t => ch.on('postgres_changes', {event:'*', schema:'public', table:t}, pl => applyChange(t, pl)));
+  ['products','vendors','comments','daychecks','staff'].forEach(t => ch.on('postgres_changes', {event:'*', schema:'public', table:t}, pl => applyChange(t, pl)));
   ch.subscribe();
+  sbo.auth.getSession().then(({data}) => { if(data.session) onOrdersUnlocked(); });
   document.addEventListener('visibilitychange', () => { if(!document.hidden && Date.now()-lastLoad > 30000) loadAll(); });
   if(S.mySlot<0) setTimeout(openStaff, 300);
 }
