@@ -338,6 +338,8 @@ dialog.narrow{width:min(440px,calc(100vw - 40px))}
 .sh-memo{margin-top:14px;background:#f7f7f8;border-radius:8px;padding:10px 12px;white-space:pre-wrap}
 .olock{max-width:360px;margin:30px 0}
 .olock-note{color:var(--muted);font-size:13px;margin:6px 0 0}
+.dup{font-size:13px;color:var(--danger);background:color-mix(in srgb,var(--danger) 9%,transparent);border-radius:8px;padding:7px 10px;line-height:1.4}
+.dup-open{border:0;background:transparent;color:var(--link);font-weight:600;padding:0 2px;font-size:13px}
 #printArea{display:none}
 @media print{
   @page{size:A4;margin:0}
@@ -441,7 +443,7 @@ body.ro .w-only{display:none!important}
   <div class="dh"><h2 id="uTitle">신상 올리기</h2><button class="x" data-close aria-label="닫기">×</button></div>
   <div class="db">
     <div class="form">
-      <div class="field"><label for="uCode">품번</label><input id="uCode" autocomplete="off"></div>
+      <div class="field"><label for="uCode">품번</label><input id="uCode" autocomplete="off"><div class="dup hidden" id="uDup" role="status"></div></div>
       <div class="field"><label for="uName">상품명</label><input id="uName" autocomplete="off"></div>
       <div class="field"><label for="uVendor">도매업체</label>
         <select id="uVendor"></select>
@@ -585,14 +587,14 @@ function fail(e, what){ console.error(e); const c = e && e.code;
 }
 
 /* ---------- ask dialog (no prompt/confirm in frames) ---------- */
-function ask({title, msg='', fields=null, ok='확인', danger=false, extra=null}){
+function ask({title, msg='', fields=null, ok='확인', danger=false, extra=null, extraDanger=true}){
   return new Promise(res => {
     const d=$('#dAsk'), okB=$('#aOk'), exB=$('#aExtra'), box=$('#aFields');
     $('#aTitle').textContent=title; $('#aMsg').textContent=msg; $('#aMsg').classList.toggle('hidden',!msg);
     box.innerHTML = (fields||[]).map((f,i)=>`<label>${esc(f.label)}${f.optional?' <span>(선택)</span>':''}<input data-k="${esc(f.key)}" type="${f.type||'text'}" value="${esc(f.value||'')}" placeholder="${esc(f.placeholder||'')}" autocomplete="off"></label>`).join('');
     box.classList.toggle('hidden', !fields);
     okB.textContent=ok; okB.className = 'btn ' + (danger ? 'danger-fill' : 'primary');
-    exB.textContent = extra || ''; exB.classList.toggle('hidden', !extra);
+    exB.textContent = extra || ''; exB.className = 'btn' + (extraDanger ? ' danger' : ''); exB.classList.toggle('hidden', !extra);
     let settled=false;
     const done = v => { if(settled) return; settled=true; if(d.open) d.close(); res(v); };
     const collect = () => { const o={}; box.querySelectorAll('input').forEach(i=>o[i.dataset.k]=i.value.trim()); return o; };
@@ -929,7 +931,25 @@ function fillVendorSelect(sel){
   s.innerHTML = '<option value="">업체 미지정</option>' + [...S.vendors].sort((a,b)=>a.name.localeCompare(b.name,'ko')).map(v=>`<option value="${v.id}">${esc(v.name)}</option>`).join('') + '<option value="__new">＋ 새 업체 추가…</option>';
   s.value = sel ?? ''; $('#uVendorNewBox').classList.add('hidden'); $('#uVendorNew').value=''; $('#uVendorWechat').value='';
 }
-$('#uVendor').onchange = e => { const n=e.target.value==='__new'; $('#uVendorNewBox').classList.toggle('hidden',!n); if(n) $('#uVendorNew').focus(); };
+$('#uVendor').onchange = e => { const n=e.target.value==='__new'; $('#uVendorNewBox').classList.toggle('hidden',!n); if(n) $('#uVendorNew').focus(); showDupHint(); };
+/* 같은 업체 + 같은 품번 중복 확인 */
+const normCode = c => String(c||'').trim().toLowerCase().replace(/\s+/g,'');
+function findDup(){
+  if(!U) return null;
+  const code = normCode($('#uCode').value); if(!code) return null;
+  let vid = $('#uVendor').value;
+  if(vid==='__new'){ const nm=$('#uVendorNew').value.trim(); const ex=S.vendors.find(v=>v.name===nm); if(!ex) return null; vid=ex.id; }
+  return S.products.find(p => p.id!==U.edit?.id && (p.vendorId||'')===(vid||'') && normCode(p.code)===code) || null;
+}
+function showDupHint(){
+  const d=findDup(), el=$('#uDup');
+  if(!d){ el.classList.add('hidden'); el.innerHTML=''; return; }
+  el.innerHTML = `이 업체에 같은 품번이 이미 있어요 · ${esc(d.name||d.code)} (${esc(dayLabel(d.date))} 입고) <button type="button" class="dup-open" data-dupopen="${d.id}">보기</button>`;
+  el.classList.remove('hidden');
+}
+$('#uCode').addEventListener('input', showDupHint);
+$('#uVendorNew').addEventListener('input', showDupHint);
+$('#uDup').addEventListener('click', e => { const b=e.target.closest('[data-dupopen]'); if(b) openDetail(b.dataset.dupopen); });
 function openUpload(p){
   U = { edit:p||null, items:(p?.images||[]).map(id=>({kind:'old',id,url:imgUrl(id)})), qr:p?.qr?{kind:'old',id:p.qr,url:imgUrl(p.qr)}:null, removed:[] };
   $('#uTitle').textContent = p ? '상품 수정' : '신상 올리기';
@@ -938,7 +958,7 @@ function openUpload(p){
   $('#uDate').value = p?.date || (S.date!=='all'?S.date:today());
   $('#uPrice').value = p?.price ?? ''; $('#uColors').value = (p?.colors||[]).join(', ');
   $('#uProg').textContent=''; $('#uSave').disabled=false;
-  drawPrev(); $('#dUp').showModal(); setTimeout(()=>$('#uCode').focus(),30);
+  drawPrev(); showDupHint(); $('#dUp').showModal(); setTimeout(()=>$('#uCode').focus(),30);
 }
 function drawPrev(){
   $('#uPrev').innerHTML = U.items.map((it,i)=>`<div class="pv"><img src="${it.url}" alt="">${i===0?'<span class="tag">대표</span>':''}
@@ -966,6 +986,14 @@ document.addEventListener('paste', e => { if(!$('#dUp').open) return; const fs=[
 $('#uSave').onclick = async () => {
   const code=$('#uCode').value.trim(), name=$('#uName').value.trim();
   if(!code && !name) return toast('품번이나 상품명 중 하나는 적어 주세요');
+  const dup = findDup();
+  if(dup){
+    const r = await ask({title:'이미 등록된 품번이에요',
+      msg:`${vendorName(dup.vendorId||'')}에 품번 ${dup.code}${dup.name?` (${dup.name})`:''}이 ${dayLabel(dup.date,true)}에 이미 올라와 있어요. 그래도 새로 저장할까요?`,
+      ok:'그래도 저장', extra:'기존 상품 보기', extraDanger:false});
+    if(!r) return;
+    if(r.__extra){ openDetail(dup.id); return; }
+  }
   if(!U.items.length) return toast('사진을 한 장 이상 올려 주세요');
   const btn=$('#uSave'), prog=$('#uProg'); btn.disabled=true;
   const uploaded=[];
